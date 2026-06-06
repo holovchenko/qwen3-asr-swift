@@ -199,11 +199,15 @@ public class NemotronStreamingASRModel {
         let languages = (try? NemotronLanguages.load(from: languagesURL)) ?? .englishOnly
 
         progressHandler?(0.80, "Loading CoreML models...")
-        let encoder = try loadCoreMLModel(name: "encoder", from: cacheDir, computeUnits: .cpuAndGPU)
+        // `.all` lets CoreML schedule the multilingual INT8 encoder onto the ANE
+        // (what it is optimized for); `.cpuAndGPU` makes the ML Program fail to
+        // compute on-device ("Unable to compute the prediction"). Mirrors upstream
+        // soniqo/speech-swift's multilingual loader.
+        let encoder = try loadCoreMLModel(name: "encoder", from: cacheDir, computeUnits: .all)
         progressHandler?(0.90, "Loading decoder...")
-        let decoder = try loadCoreMLModel(name: "decoder", from: cacheDir, computeUnits: .cpuAndGPU)
+        let decoder = try loadCoreMLModel(name: "decoder", from: cacheDir, computeUnits: .all)
         progressHandler?(0.95, "Loading joint network...")
-        let joint = try loadCoreMLModel(name: "joint", from: cacheDir, computeUnits: .cpuAndGPU)
+        let joint = try loadCoreMLModel(name: "joint", from: cacheDir, computeUnits: .all)
 
         progressHandler?(1.0, "Model loaded")
         AudioLog.modelLoading.info("Nemotron Streaming model loaded (\(vocabulary.count) tokens)")
