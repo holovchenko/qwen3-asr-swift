@@ -23,6 +23,32 @@ public struct NemotronStreamingConfig: Codable, Sendable {
     public let blankTokenId: Int
     public let streaming: StreamingConfig
 
+    /// Maps the Swift property `attentionContext` onto the exporter's NeMo-style
+    /// key `attentionLeftContext` (cache-aware Conformer left-context size,
+    /// `att_context_size[0]`). The CoreML encoder is exported with a fixed
+    /// `cache_last_channel` left-context dimension; this value must match it or
+    /// `predict()` fails with a shape mismatch at transcription time. Declaring
+    /// `CodingKeys` does NOT suppress the synthesized memberwise initializer, so
+    /// `.default` keeps working.
+    private enum CodingKeys: String, CodingKey {
+        case numMelBins
+        case sampleRate
+        case nFFT
+        case hopLength
+        case winLength
+        case preEmphasis
+        case encoderHidden
+        case encoderLayers
+        case subsamplingFactor
+        case attentionContext = "attentionLeftContext"
+        case convCacheSize
+        case decoderHidden
+        case decoderLayers
+        case vocabSize
+        case blankTokenId
+        case streaming
+    }
+
     public struct StreamingConfig: Codable, Sendable {
         public let chunkMs: Int
         public let chunkSize: Int
