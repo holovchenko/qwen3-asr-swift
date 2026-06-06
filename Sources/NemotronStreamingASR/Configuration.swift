@@ -21,6 +21,9 @@ public struct NemotronStreamingConfig: Codable, Sendable {
     public let decoderLayers: Int
     public let vocabSize: Int
     public let blankTokenId: Int
+    /// One-hot width of the multilingual `language_mask` encoder input (slots in
+    /// `languages.json`). Optional — English-only bundles omit it; defaults to 128.
+    public let numPrompts: Int?
     public let streaming: StreamingConfig
 
     /// Maps the Swift property `attentionContext` onto the exporter's NeMo-style
@@ -46,6 +49,7 @@ public struct NemotronStreamingConfig: Codable, Sendable {
         case decoderLayers
         case vocabSize
         case blankTokenId
+        case numPrompts
         case streaming
     }
 
@@ -76,6 +80,7 @@ public struct NemotronStreamingConfig: Codable, Sendable {
         decoderLayers: 2,
         vocabSize: 1024,
         blankTokenId: 1024,
+        numPrompts: 128,
         streaming: StreamingConfig(
             chunkMs: 160,
             chunkSize: 2,

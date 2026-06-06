@@ -21,13 +21,15 @@ public class NemotronStreamingASRModel {
     var decoder: MLModel?
     var joint: MLModel?
     private let vocabulary: NemotronVocabulary
+    private let languages: NemotronLanguages
 
     private init(
         config: NemotronStreamingConfig,
         encoder: MLModel?,
         decoder: MLModel?,
         joint: MLModel?,
-        vocabulary: NemotronVocabulary
+        vocabulary: NemotronVocabulary,
+        languages: NemotronLanguages = .englishOnly
     ) {
         self.config = config
         self.melPreprocessor = StreamingMelPreprocessor(config: config)
@@ -35,6 +37,7 @@ public class NemotronStreamingASRModel {
         self.decoder = decoder
         self.joint = joint
         self.vocabulary = vocabulary
+        self.languages = languages
     }
 
     /// A partial transcript from streaming recognition.
@@ -46,12 +49,16 @@ public class NemotronStreamingASRModel {
     }
 
     /// Create a new streaming session.
-    public func createSession() throws -> StreamingSession {
+    public func createSession(language: String? = nil) throws -> StreamingSession {
         guard _isLoaded, let encoder, let decoder, let joint else {
             throw AudioModelError.inferenceFailed(operation: "createSession", reason: "Model not loaded")
         }
+        // BCP-47 tag (e.g. "uk-UA") → one-hot `language_mask` slot. `nil`/unknown
+        // resolves to the model's "auto" slot for automatic language detection.
+        let languageSlot = languages.slot(for: language)
         return try StreamingSession(
             config: config,
+            languageSlot: languageSlot,
             encoder: encoder,
             decoder: decoder,
             joint: joint,
@@ -119,7 +126,7 @@ public class NemotronStreamingASRModel {
         let padSamples = config.sampleRate / 10  // 100 ms
         samples = [Float](repeating: 0, count: padSamples) + samples + [Float](repeating: 0, count: padSamples)
 
-        let session = try createSession()
+        let session = try createSession(language: language)
         var allPartials = try session.pushAudio(samples)
         allPartials.append(contentsOf: try session.finalize())
         if let lastFinal = allPartials.last(where: { $0.isFinal }) {
@@ -162,6 +169,7 @@ public class NemotronStreamingASRModel {
                     "joint.mlmodelc/**",
                     "vocab.json",
                     "config.json",
+                    "languages.json",
                 ]
             ) { fraction in
                 progressHandler?(fraction * 0.7, "Downloading model...")
@@ -185,6 +193,11 @@ public class NemotronStreamingASRModel {
         let vocabURL = cacheDir.appendingPathComponent("vocab.json")
         let vocabulary = try NemotronVocabulary.load(from: vocabURL)
 
+        // Multilingual bundles ship `languages.json` (tag → one-hot slot). Absent
+        // for English-only bundles whose encoder takes no `language_mask`.
+        let languagesURL = cacheDir.appendingPathComponent("languages.json")
+        let languages = (try? NemotronLanguages.load(from: languagesURL)) ?? .englishOnly
+
         progressHandler?(0.80, "Loading CoreML models...")
         let encoder = try loadCoreMLModel(name: "encoder", from: cacheDir, computeUnits: .cpuAndGPU)
         progressHandler?(0.90, "Loading decoder...")
@@ -200,7 +213,8 @@ public class NemotronStreamingASRModel {
             encoder: encoder,
             decoder: decoder,
             joint: joint,
-            vocabulary: vocabulary
+            vocabulary: vocabulary,
+            languages: languages
         )
     }
 
