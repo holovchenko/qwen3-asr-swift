@@ -199,15 +199,20 @@ public class NemotronStreamingASRModel {
         let languages = (try? NemotronLanguages.load(from: languagesURL)) ?? .englishOnly
 
         progressHandler?(0.80, "Loading CoreML models...")
-        // `.all` lets CoreML schedule the multilingual INT8 encoder onto the ANE
-        // (what it is optimized for); `.cpuAndGPU` makes the ML Program fail to
-        // compute on-device ("Unable to compute the prediction"). Mirrors upstream
-        // soniqo/speech-swift's multilingual loader.
-        let encoder = try loadCoreMLModel(name: "encoder", from: cacheDir, computeUnits: .all)
+        // The multilingual INT8 models are ANE-optimized: they must keep the Neural
+        // Engine in the compute set (`.cpuAndGPU` excludes the ANE and makes the ML
+        // Program fail — "Unable to compute the prediction"). We use `.cpuAndNeuralEngine`
+        // rather than `.all` deliberately: `.all` also admits the GPU, and iOS forbids
+        // GPU command-buffer submission from a background process — the host app runs
+        // backgrounded during keyboard dictation, so a GPU-scheduled prediction fails with
+        // kIOGPUCommandBufferCallbackErrorBackgroundExecutionNotPermitted. Dropping the GPU
+        // keeps the ANE path (CPU is the universal fallback) and is background-safe.
+        // Mirrors how Parakeet (FluidAudio) loads its encoder/decoder.
+        let encoder = try loadCoreMLModel(name: "encoder", from: cacheDir, computeUnits: .cpuAndNeuralEngine)
         progressHandler?(0.90, "Loading decoder...")
-        let decoder = try loadCoreMLModel(name: "decoder", from: cacheDir, computeUnits: .all)
+        let decoder = try loadCoreMLModel(name: "decoder", from: cacheDir, computeUnits: .cpuAndNeuralEngine)
         progressHandler?(0.95, "Loading joint network...")
-        let joint = try loadCoreMLModel(name: "joint", from: cacheDir, computeUnits: .all)
+        let joint = try loadCoreMLModel(name: "joint", from: cacheDir, computeUnits: .cpuAndNeuralEngine)
 
         progressHandler?(1.0, "Model loaded")
         AudioLog.modelLoading.info("Nemotron Streaming model loaded (\(vocabulary.count) tokens)")
