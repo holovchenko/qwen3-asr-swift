@@ -257,14 +257,24 @@ public class StreamingSession {
 
     static func copyCastFP16ToFP32(_ src: MLMultiArray, into dst: MLMultiArray) {
         let count = src.count
-        let srcPtr = src.dataPointer.assumingMemoryBound(to: Float16.self)
         let dstPtr = dst.dataPointer.assumingMemoryBound(to: Float.self)
+        #if arch(arm64)
+        let srcPtr = src.dataPointer.assumingMemoryBound(to: Float16.self)
         for i in 0..<count { dstPtr[i] = Float(srcPtr[i]) }
+        #else
+        let srcPtr = src.dataPointer.assumingMemoryBound(to: UInt16.self)
+        for i in 0..<count { dstPtr[i] = fp16BitsToFloat(srcPtr[i]) }
+        #endif
     }
 
     private func truncateMel(_ mel: MLMultiArray, to targetFrames: Int) throws -> MLMultiArray {
         let numMelBins = config.numMelBins
-        let stride = mel.dataType == .float16 ? MemoryLayout<Float16>.stride : MemoryLayout<Float>.stride
+        #if arch(arm64)
+        let f16Stride = MemoryLayout<Float16>.stride
+        #else
+        let f16Stride = MemoryLayout<UInt16>.stride  // Float16 is binary16 = 2 bytes
+        #endif
+        let stride = mel.dataType == .float16 ? f16Stride : MemoryLayout<Float>.stride
         let truncated = try MLMultiArray(
             shape: [1, numMelBins as NSNumber, targetFrames as NSNumber], dataType: mel.dataType)
         let actualFrames = mel.shape[2].intValue
@@ -280,7 +290,12 @@ public class StreamingSession {
 
     private func padMel(_ mel: MLMultiArray, actualLength: Int, targetLength: Int) throws -> MLMultiArray {
         let numMelBins = config.numMelBins
-        let stride = mel.dataType == .float16 ? MemoryLayout<Float16>.stride : MemoryLayout<Float>.stride
+        #if arch(arm64)
+        let f16Stride = MemoryLayout<Float16>.stride
+        #else
+        let f16Stride = MemoryLayout<UInt16>.stride  // Float16 is binary16 = 2 bytes
+        #endif
+        let stride = mel.dataType == .float16 ? f16Stride : MemoryLayout<Float>.stride
         let padded = try MLMultiArray(
             shape: [1, numMelBins as NSNumber, targetLength as NSNumber], dataType: mel.dataType)
         for bin in 0..<numMelBins {

@@ -90,9 +90,14 @@ struct RNNTGreedyDecoder {
 
     private func copyEncoderFrameFP16(from encoded: MLMultiArray, at t: Int, toFP32 slice: MLMultiArray) {
         let hidden = config.encoderHidden
-        let src = encoded.dataPointer.assumingMemoryBound(to: Float16.self).advanced(by: t * hidden)
         let dst = slice.dataPointer.assumingMemoryBound(to: Float.self)
+        #if arch(arm64)
+        let src = encoded.dataPointer.assumingMemoryBound(to: Float16.self).advanced(by: t * hidden)
         for i in 0..<hidden { dst[i] = Float(src[i]) }
+        #else
+        let src = encoded.dataPointer.assumingMemoryBound(to: UInt16.self).advanced(by: t * hidden)
+        for i in 0..<hidden { dst[i] = fp16BitsToFloat(src[i]) }
+        #endif
     }
 
     private func logSoftmax(_ array: MLMultiArray, tokenId: Int, count: Int, floatBuf: UnsafeMutablePointer<Float>) -> Float {
@@ -124,7 +129,12 @@ struct RNNTGreedyDecoder {
     }
 
     private func loadFP16AsFloat(_ array: MLMultiArray, count: Int, into buf: UnsafeMutablePointer<Float>) {
+        #if arch(arm64)
         let ptr = array.dataPointer.assumingMemoryBound(to: Float16.self)
         for i in 0..<count { buf[i] = Float(ptr[i]) }
+        #else
+        let ptr = array.dataPointer.assumingMemoryBound(to: UInt16.self)
+        for i in 0..<count { buf[i] = fp16BitsToFloat(ptr[i]) }
+        #endif
     }
 }
