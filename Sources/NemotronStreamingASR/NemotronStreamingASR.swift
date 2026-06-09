@@ -199,20 +199,26 @@ public class NemotronStreamingASRModel {
         let languages = (try? NemotronLanguages.load(from: languagesURL)) ?? .englishOnly
 
         progressHandler?(0.80, "Loading CoreML models...")
-        // The multilingual INT8 models are ANE-optimized: they must keep the Neural
-        // Engine in the compute set (`.cpuAndGPU` excludes the ANE and makes the ML
-        // Program fail — "Unable to compute the prediction"). We use `.cpuAndNeuralEngine`
-        // rather than `.all` deliberately: `.all` also admits the GPU, and iOS forbids
-        // GPU command-buffer submission from a background process — the host app runs
-        // backgrounded during keyboard dictation, so a GPU-scheduled prediction fails with
-        // kIOGPUCommandBufferCallbackErrorBackgroundExecutionNotPermitted. Dropping the GPU
-        // keeps the ANE path (CPU is the universal fallback) and is background-safe.
-        // Mirrors how Parakeet (FluidAudio) loads its encoder/decoder.
-        let encoder = try loadCoreMLModel(name: "encoder", from: cacheDir, computeUnits: .cpuAndNeuralEngine)
+        // Compute-unit policy is platform-split because of an iOS 26→27 regression:
+        // iOS 27 HARD-REFUSES ANE ML-Program inference from a BACKGROUNDED process
+        // (the host app runs backgrounded during keyboard dictation), failing with
+        // `com.apple.appleneuralengine Code=8 ... Program Inference error`. iOS 26
+        // merely throttled background ANE. The GPU is also forbidden in a background
+        // process (kIOGPUCommandBufferCallbackErrorBackgroundExecutionNotPermitted),
+        // so on iOS the only background-safe compute set is `.cpuOnly` — loaded
+        // statically so the model is warm in one mode with no fg/bg reload (validated:
+        // same speed as the prior CPU-equivalent iOS-26 background path). macOS has no
+        // such background restriction and keeps the faster `.cpuAndNeuralEngine` path.
+        #if os(iOS)
+        let cu: MLComputeUnits = .cpuOnly
+        #else
+        let cu: MLComputeUnits = .cpuAndNeuralEngine
+        #endif
+        let encoder = try loadCoreMLModel(name: "encoder", from: cacheDir, computeUnits: cu)
         progressHandler?(0.90, "Loading decoder...")
-        let decoder = try loadCoreMLModel(name: "decoder", from: cacheDir, computeUnits: .cpuAndNeuralEngine)
+        let decoder = try loadCoreMLModel(name: "decoder", from: cacheDir, computeUnits: cu)
         progressHandler?(0.95, "Loading joint network...")
-        let joint = try loadCoreMLModel(name: "joint", from: cacheDir, computeUnits: .cpuAndNeuralEngine)
+        let joint = try loadCoreMLModel(name: "joint", from: cacheDir, computeUnits: cu)
 
         progressHandler?(1.0, "Model loaded")
         AudioLog.modelLoading.info("Nemotron Streaming model loaded (\(vocabulary.count) tokens)")
