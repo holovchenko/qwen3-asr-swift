@@ -51,7 +51,13 @@ public enum HuggingFaceDownloader {
 
     // MARK: - Weight Existence Check
 
-    /// Check if safetensors weights exist in a directory.
+    /// Check if safetensors weights (MLX/PyTorch models) OR a compiled
+    /// CoreML model bundle (`.mlmodelc` — e.g. Parakeet's encoder/decoder/
+    /// joint) exist in a directory. CoreML-only exports never produce
+    /// `.safetensors` files, so without this the offline short-circuit in
+    /// `downloadWeights` never fires for a pre-installed (R2) CoreML model,
+    /// and `fromPretrained` falls through to `hub.snapshot()` — which fails
+    /// offline and can re-download on every launch even when online.
     public static func weightsExist(in directory: URL) -> Bool {
         let fm = FileManager.default
         guard fm.fileExists(atPath: directory.path) else { return false }
@@ -62,7 +68,7 @@ public enum HuggingFaceDownloader {
             AudioLog.download.debug("Could not list directory \(directory.path): \(error)")
             contents = []
         }
-        return contents.contains { $0.pathExtension == "safetensors" }
+        return contents.contains { $0.pathExtension == "safetensors" || $0.pathExtension == "mlmodelc" }
     }
 
     // MARK: - Download

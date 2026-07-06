@@ -243,6 +243,7 @@ public class ParakeetASRModel {
         modelId: String? = nil,
         cacheDir: URL? = nil,
         offlineMode: Bool = false,
+        computeUnits: MLComputeUnits? = nil,
         progressHandler: ((Double, String) -> Void)? = nil
     ) async throws -> ParakeetASRModel {
         let effectiveModelId: String
@@ -316,7 +317,12 @@ public class ParakeetASRModel {
 
         // Step 5: Load CoreML models (encoder, decoder, joint — no preprocessor)
         progressHandler?(0.80, "Loading CoreML models...")
-        // Compute-unit preference per platform:
+        // Compute-unit preference per platform, UNLESS the caller forces a
+        // specific choice via `computeUnits` (added for Hovor: iOS 27 bans
+        // ANE/GPU CoreML inference from a backgrounded process, and Hovor's
+        // iOS local STT runs in the host app while backgrounded — so it must
+        // force `.cpuOnly`, which the platform default below never selects
+        // on a real iOS device).
         //   iOS Simulator: pin `.cpuOnly`. The simulator has no MPSGraph
         //     backend ("Espresso compiled without MPSGraph engine") — any
         //     other choice silently falls back to a partial CPU/GPU mix
@@ -330,13 +336,18 @@ public class ParakeetASRModel {
         //     than iOS A-series and SIGSEGVs when loading this INT8
         //     encoder (observed in E2E tests). Sticking with the
         //     established GPU path keeps test runs reliable.
-        #if targetEnvironment(simulator)
-        let computeUnitsToTry: [MLComputeUnits] = [.cpuOnly]
-        #elseif os(iOS)
-        let computeUnitsToTry: [MLComputeUnits] = [.cpuAndNeuralEngine, .cpuAndGPU]
-        #else
-        let computeUnitsToTry: [MLComputeUnits] = [.cpuAndGPU]
-        #endif
+        let computeUnitsToTry: [MLComputeUnits]
+        if let computeUnits {
+            computeUnitsToTry = [computeUnits]
+        } else {
+            #if targetEnvironment(simulator)
+            computeUnitsToTry = [.cpuOnly]
+            #elseif os(iOS)
+            computeUnitsToTry = [.cpuAndNeuralEngine, .cpuAndGPU]
+            #else
+            computeUnitsToTry = [.cpuAndGPU]
+            #endif
+        }
         let (encoder, encoderUnits) = try loadCoreMLModelWithFallback(
             name: "encoder", from: resolvedCacheDir, computeUnitsToTry: computeUnitsToTry)
         progressHandler?(0.90, "Loading decoder...")
