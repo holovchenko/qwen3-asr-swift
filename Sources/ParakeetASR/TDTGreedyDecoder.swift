@@ -86,7 +86,14 @@ struct TDTGreedyDecoder {
         // Text tokens start at index 274.
         let firstTextTokenId = 274
 
+        // TDT decode loop. A non-blank emission whose duration head predicts
+        // `duration == 0` means "another token likely follows from this SAME
+        // encoder frame" — the joint network must be re-run on frame `t` again
+        // (multi-symbol-per-frame emission) instead of unconditionally
+        // advancing. Bounded by `maxSymbolsPerStep` so the loop always
+        // terminates. Mirrors FluidAudio's TdtDecoderV3/RnntDecoder pattern.
         var t = 0
+        var symbolsAtThisFrame = 0
         while t < encodedLength {
             // Extract encoder frame at position t (mutates encSlice data in-place)
             copyEncoderFrame(from: encoded, at: t, to: encSlice)
@@ -101,29 +108,45 @@ struct TDTGreedyDecoder {
 
             if tokenId == config.blankTokenId {
                 t += 1
-            } else {
-                if tokenId >= firstTextTokenId {
-                    tokens.append(tokenId)
-                    // Compute log-softmax: log_prob = logit[id] - log(sum(exp(logits)))
-                    let logProb = logSoftmax(tokenLogits, tokenId: tokenId, count: config.vocabSize + 1, floatBuf: argmaxBuf)
-                    tokenLogProbs.append(logProb)
-                }
+                symbolsAtThisFrame = 0
+                continue
+            }
 
-                let durationIdx = argmax(durationLogits, count: config.numDurationBins, floatBuf: nil)
-                let duration = config.durationBins[durationIdx]
-                t += max(duration, 1)
+            if tokenId >= firstTextTokenId {
+                tokens.append(tokenId)
+                // Compute log-softmax: log_prob = logit[id] - log(sum(exp(logits)))
+                let logProb = logSoftmax(tokenLogits, tokenId: tokenId, count: config.vocabSize + 1, floatBuf: argmaxBuf)
+                tokenLogProbs.append(logProb)
+            }
 
-                // Update decoder state with the emitted token
-                tokenPtr.pointee = Int32(tokenId)
-                decoderProvider.update("h", hState)
-                decoderProvider.update("c", cState)
-                let decOut = try decoder.prediction(from: decoderProvider)
-                decoderOutput = decOut.featureValue(for: "decoder_output")!.multiArrayValue!
-                hState = decOut.featureValue(for: "h_out")!.multiArrayValue!
-                cState = decOut.featureValue(for: "c_out")!.multiArrayValue!
+            let durationIdx = argmax(durationLogits, count: config.numDurationBins, floatBuf: nil)
+            let duration = config.durationBins[durationIdx]
 
-                // Update joint provider with new decoder output
-                jointProvider.update("decoder_output", decoderOutput)
+            // Update decoder state with the emitted token — required before the
+            // next joint() call regardless of whether we stay on this frame or
+            // advance past it.
+            tokenPtr.pointee = Int32(tokenId)
+            decoderProvider.update("h", hState)
+            decoderProvider.update("c", cState)
+            let decOut = try decoder.prediction(from: decoderProvider)
+            decoderOutput = decOut.featureValue(for: "decoder_output")!.multiArrayValue!
+            hState = decOut.featureValue(for: "h_out")!.multiArrayValue!
+            cState = decOut.featureValue(for: "c_out")!.multiArrayValue!
+
+            // Update joint provider with new decoder output
+            jointProvider.update("decoder_output", decoderOutput)
+
+            let outcome = Self.frameOutcome(
+                duration: duration,
+                symbolsAtThisFrame: symbolsAtThisFrame,
+                maxSymbolsPerStep: config.maxSymbolsPerStep
+            )
+            switch outcome {
+            case .stayOnFrame(let next):
+                symbolsAtThisFrame = next
+            case .advance(let by, let next):
+                t += by
+                symbolsAtThisFrame = next
             }
         }
 
@@ -136,6 +159,45 @@ struct TDTGreedyDecoder {
             confidence = 0.0
         }
         return (tokens, tokenLogProbs, confidence)
+    }
+
+    // MARK: - Frame Advancement (multi-symbol-per-frame TDT decoding)
+
+    /// Outcome of processing one non-blank emission at the current encoder frame.
+    enum FrameOutcome: Equatable {
+        /// Duration head predicted 0 — re-run the joint on the SAME frame to
+        /// emit another token (`symbolsAtThisFrame` is the updated count).
+        case stayOnFrame(symbolsAtThisFrame: Int)
+        /// Advance the encoder frame index by `by` (either the predicted
+        /// duration, or a forced safety advance of 1 when the per-frame
+        /// symbol cap is hit); `symbolsAtThisFrame` resets to the given value.
+        case advance(by: Int, symbolsAtThisFrame: Int)
+    }
+
+    /// Decide how the outer decode loop should advance after a non-blank
+    /// emission, given the model's predicted `duration` for that emission.
+    ///
+    /// Mirrors FluidAudio's `TdtDecoderV3`/`RnntDecoder` gating: `duration == 0`
+    /// means "another token likely follows from this same frame", so the
+    /// decoder stays on frame `t` (bounded by `maxSymbolsPerStep`, after which
+    /// it is forced to advance by 1 so the outer loop always terminates).
+    /// `duration > 0` always advances immediately, resetting the per-frame count.
+    ///
+    /// Blank tokens are handled directly in the decode loop (`t += 1`) and never
+    /// reach this function.
+    static func frameOutcome(
+        duration: Int,
+        symbolsAtThisFrame: Int,
+        maxSymbolsPerStep: Int
+    ) -> FrameOutcome {
+        guard duration == 0 else {
+            return .advance(by: duration, symbolsAtThisFrame: 0)
+        }
+        let next = symbolsAtThisFrame + 1
+        if next >= maxSymbolsPerStep {
+            return .advance(by: 1, symbolsAtThisFrame: 0)
+        }
+        return .stayOnFrame(symbolsAtThisFrame: next)
     }
 
     // MARK: - Array Operations
